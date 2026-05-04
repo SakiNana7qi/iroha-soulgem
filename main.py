@@ -8,6 +8,7 @@ import yaml
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from collectors.system import get_cpu, get_memory, get_network, get_disk
 from collectors.gpu import get_gpu
@@ -33,6 +34,9 @@ gpu_enabled = config.get("gpu", {}).get("enabled", True)
 service_list = config.get("services", [])
 command_configs = config.get("commands", [])
 refresh_interval = server_cfg.get("refresh_interval", 1)
+
+class IntervalUpdate(BaseModel):
+    interval: int
 
 cmd_runner = CommandRunner(command_configs)
 
@@ -104,6 +108,13 @@ async def api_stream():
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/api/interval")
+async def set_interval(body: IntervalUpdate):
+    global refresh_interval
+    refresh_interval = max(0.1, min(2.0, body.interval / 1000.0))
+    return {"interval_ms": int(refresh_interval * 1000)}
 
 
 if __name__ == "__main__":

@@ -45,13 +45,26 @@ h1{font-size:20px;font-weight:600;margin-bottom:16px;color:var(--accent)}
 .status-bar{display:flex;align-items:center;gap:8px;margin-bottom:16px;font-size:12px;color:var(--dim)}
 .pulse{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.interval-ctrl{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);background:var(--card);border:1px solid var(--border);border-radius:6px;padding:6px 12px}
+.interval-ctrl input[type=range]{width:100px;accent-color:var(--accent);cursor:pointer}
+.interval-val{font-variant-numeric:tabular-nums;min-width:44px;text-align:right;color:var(--text);font-weight:500}
 </style>
 </head>
 <body>
-<h1>Server Monitor</h1>
-<div class="status-bar">
-  <div class="pulse"></div>
-  <span id="status-text">Connecting...</span>
+<div class="header">
+  <div>
+    <h1>Server Monitor</h1>
+    <div class="status-bar">
+      <div class="pulse"></div>
+      <span id="status-text">Connecting...</span>
+    </div>
+  </div>
+  <div class="interval-ctrl">
+    <span>Interval</span>
+    <input type="range" id="interval-slider" min="100" max="2000" step="100" value="1000">
+    <span class="interval-val" id="interval-val">1000ms</span>
+  </div>
 </div>
 <div class="grid">
   <!-- CPU -->
@@ -215,6 +228,16 @@ function connect(){
     setTimeout(connect,2000);
   };
 }
+const slider=document.getElementById('interval-slider');
+const valLabel=document.getElementById('interval-val');
+let debounceTimer=null;
+slider.addEventListener('input',()=>{
+  valLabel.textContent=slider.value+'ms';
+  clearTimeout(debounceTimer);
+  debounceTimer=setTimeout(()=>{
+    fetch('/api/interval',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval:+slider.value})});
+  },300);
+});
 connect();
 </script>
 </body>
