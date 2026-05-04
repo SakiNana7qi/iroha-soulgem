@@ -180,9 +180,11 @@ function renderSensors(data){
   if(!data||!data.sensors||data.sensors.length===0)return '';
   document.getElementById('sensor-card').style.display='';
   let h='<div class="metric"><span class="label">Method</span><span class="value">'+data.method+'</span></div>';
-  h+='<table class="sensor-table"><tr><th>Name</th><th>Value</th><th>Type</th></tr>';
+  h+='<table class="sensor-table"><tr><th>Name</th><th>Reading</th><th>High</th><th>Low</th><th>Status</th></tr>';
   data.sensors.forEach(s=>{
-    h+='<tr><td>'+s.name+'</td><td>'+s.value+' '+s.unit+'</td><td>'+s.type+'</td></tr>';
+    let val=s.value+(s.unit?' '+s.unit:'');
+    let status=s.status?'<span style="color:var(--red)">'+s.status+'</span>':'';
+    h+='<tr><td>'+s.name+'</td><td>'+val+'</td><td>'+(s.high||'')+'</td><td>'+(s.low||'')+'</td><td>'+status+'</td></tr>';
   });
   h+='</table>';
   return h;

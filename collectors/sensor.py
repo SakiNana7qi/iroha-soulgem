@@ -1,5 +1,6 @@
 import shutil
 import subprocess
+import os
 import re
 
 
@@ -10,74 +11,125 @@ def _detect_method(config_method):
     if shutil.which("ipmitool"):
         return "ipmitool"
 
-    sd5_path = r"C:\Program Files\Supermicro\SuperDoctor5\SD5CLI.exe"
-    import os
-    if os.path.isfile(sd5_path):
+    sd5_bat = r"C:\Program Files\Supermicro\SuperDoctor5\sdc.bat"
+    if os.path.isfile(sd5_bat):
         return "sd5"
 
     return "wmi"
 
 
-def _read_ipmitool(ipmitool_path):
-    try:
-        result = subprocess.run(
-            [ipmitool_path, "sdr", "list"],
-            capture_output=True, text=True, timeout=10
-        )
-        if result.returncode != 0:
-            return []
+def _classify(name):
+    lower = name.lower()
+    if "temp" in lower:
+        return "temperature"
+    if "fan" in lower:
+        return "fan"
+    if "volt" in lower or re.match(r"^\d+(\.\d+)?v\b", lower):
+        return "voltage"
+    if "power" in lower or "ps" in lower.split():
+        return "power"
+    if "intru" in lower:
+        return "chassis"
+    if "ecc" in lower:
+        return "memory"
+    if "raid" in lower or "slot" in lower or "vd " in lower or "physicaldrive" in lower:
+        return "disk"
+    return "other"
 
-        sensors = []
-        for line in result.stdout.strip().splitlines():
-            parts = [p.strip() for p in line.split("|")]
-            if len(parts) >= 3:
-                name = parts[0]
-                value = parts[1]
-                unit = parts[2] if len(parts) > 2 else ""
 
-                sensor_type = "other"
-                lower = name.lower()
-                if "temp" in lower:
-                    sensor_type = "temperature"
-                elif "fan" in lower:
-                    sensor_type = "fan"
-                elif "volt" in lower:
-                    sensor_type = "voltage"
-                elif "power" in lower:
-                    sensor_type = "power"
+def _parse_sd5_table(output):
+    sensors = []
+    lines = output.strip().splitlines()
 
-                sensors.append({
-                    "name": name,
-                    "value": value,
-                    "unit": unit,
-                    "type": sensor_type,
-                })
+    header_idx = None
+    for i, line in enumerate(lines):
+        if "Monitored Item" in line and "Reading" in line:
+            header_idx = i
+            break
+    if header_idx is None:
         return sensors
-    except Exception:
-        return []
+
+    sep_idx = header_idx + 1
+    if sep_idx >= len(lines) or not lines[sep_idx].startswith("---"):
+        return sensors
+
+    for line in lines[sep_idx + 1:]:
+        stripped = line.strip()
+        if not stripped or line.startswith("---") or line.startswith("----"):
+            continue
+        if stripped.startswith("\\\\") or stripped.startswith("("):
+            continue
+
+        parts = line.split()
+        if not parts:
+            continue
+
+        first_val_idx = None
+        for j, p in enumerate(parts):
+            if re.match(r"^[\d.]+$", p) or p in ("Good", "Triggered", "Unavailable", "CRITICAL"):
+                first_val_idx = j
+                break
+
+        if first_val_idx is None:
+            continue
+
+        name = " ".join(parts[:first_val_idx])
+        rest = parts[first_val_idx:]
+
+        high = ""
+        low = ""
+        reading = ""
+        status = ""
+
+        is_fan = "fan" in name.lower()
+
+        if len(rest) >= 6 and re.match(r"^[\d.]+$", rest[0]):
+            high = f"{rest[0]} {rest[1]}"
+            low = f"{rest[2]} {rest[3]}"
+            reading = f"{rest[4]} {rest[5]}"
+            if len(rest) > 6:
+                status = " ".join(rest[6:])
+        elif len(rest) >= 4 and re.match(r"^[\d.]+$", rest[0]):
+            if is_fan:
+                low = f"{rest[0]} {rest[1]}"
+                reading = f"{rest[2]} {rest[3]}"
+            else:
+                high = f"{rest[0]} {rest[1]}"
+                reading = f"{rest[2]} {rest[3]}"
+            if len(rest) > 4:
+                status = " ".join(rest[4:])
+        elif len(rest) >= 2 and re.match(r"^[\d.]+$", rest[0]):
+            reading = f"{rest[0]} {rest[1]}"
+            if len(rest) > 2:
+                status = " ".join(rest[2:])
+        else:
+            status = " ".join(rest)
+
+        value = reading.split()[0] if reading else status
+        unit = reading.split()[1] if reading and " " in reading else ""
+
+        sensors.append({
+            "name": name,
+            "value": value,
+            "unit": unit,
+            "high": high,
+            "low": low,
+            "status": status,
+            "type": _classify(name),
+        })
+    return sensors
 
 
 def _read_sd5():
-    sd5_path = r"C:\Program Files\Supermicro\SuperDoctor5\SD5CLI.exe"
+    sd5_bat = r"C:\Program Files\Supermicro\SuperDoctor5\sdc.bat"
     try:
         result = subprocess.run(
-            [sd5_path, "-s", "all"],
-            capture_output=True, text=True, timeout=10
+            ["cmd", "/c", sd5_bat],
+            capture_output=True, text=True, timeout=15
         )
-        if result.returncode != 0:
+        if not result.stdout.strip():
             return []
-
-        sensors = []
-        for line in result.stdout.strip().splitlines():
-            if "=" in line:
-                name, value = line.split("=", 1)
-                sensors.append({
-                    "name": name.strip(),
-                    "value": value.strip(),
-                    "unit": "",
-                    "type": "other",
-                })
-        return sensors
+        return _parse_sd5_table(result.stdout)
     except Exception:
         return []
 
