@@ -1,0 +1,27 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+  refresh_interval: 1    # seconds
+
+sensors:
+  method: "auto"         # auto | ipmitool | sd5 | wmi | disabled
+  ipmitool_path: "ipmitool"
+
+gpu:
+  enabled: true
+
+services:
+  - name: "ddns-go"
+    display: "DDNS-GO 域名解析"
+  - name: "sshd"
+    display: "OpenSSH SSH Server"
+  - name: "sd5"
+    display: "SuperDoctor 5 Service"
+
+commands:
+  - name: "boot-time"
+    cmd: "systeminfo | findstr /B /C:\"System Boot Time\""
+    interval: 60
+  - name: "disk-free"
+    cmd: "wmic logicaldisk get caption,freespace,size"
+    interval: 30

@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Server Monitor</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0d1117;--card:#161b22;--border:#30363d;--text:#e6edf3;--dim:#8b949e;--accent:#58a6ff;--green:#3fb950;--red:#f85149;--yellow:#d29922;--bar-bg:#21262d}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);padding:16px;min-height:100vh}
+h1{font-size:20px;font-weight:600;margin-bottom:16px;color:var(--accent)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px}
+.card h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);margin-bottom:12px}
+.metric{display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:13px}
+.metric .label{color:var(--dim)}
+.metric .value{font-variant-numeric:tabular-nums;font-weight:500}
+.bar-wrap{background:var(--bar-bg);border-radius:4px;height:8px;margin-top:4px;overflow:hidden}
+.bar{height:100%;border-radius:4px;transition:width .3s ease}
+.bar.cpu{background:var(--accent)}
+.bar.mem{background:var(--green)}
+.bar.disk{background:var(--yellow)}
+.bar.gpu{background:#bc8cff}
+.core-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(48px,1fr));gap:4px;margin-top:8px}
+.core{background:var(--bar-bg);border-radius:3px;height:24px;position:relative;overflow:hidden}
+.core-fill{position:absolute;bottom:0;left:0;right:0;background:var(--accent);transition:height .3s ease;opacity:.7}
+.core-label{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--text);z-index:1}
+.svc-list{display:flex;flex-direction:column;gap:6px}
+.svc{display:flex;align-items:center;gap:8px;font-size:13px}
+.dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.dot.running{background:var(--green)}
+.dot.stopped{background:var(--red)}
+.dot.not_found,.dot.error{background:var(--yellow)}
+.cmd-block{margin-bottom:12px}
+.cmd-block:last-child{margin-bottom:0}
+.cmd-name{font-size:12px;color:var(--accent);margin-bottom:4px}
+.cmd-output{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:8px;font-size:12px;font-family:'Cascadia Code','Fira Code',monospace;white-space:pre-wrap;word-break:break-all;max-height:160px;overflow-y:auto;color:var(--dim)}
+.sensor-table{width:100%;font-size:12px;border-collapse:collapse}
+.sensor-table th{text-align:left;color:var(--dim);font-weight:500;padding:4px 8px;border-bottom:1px solid var(--border)}
+.sensor-table td{padding:4px 8px;border-bottom:1px solid var(--border)}
+.sensor-table tr:last-child td{border-bottom:none}
+.net-iface{margin-bottom:8px}
+.net-iface:last-child{margin-bottom:0}
+.iface-name{font-size:12px;color:var(--accent);margin-bottom:4px}
+.status-bar{display:flex;align-items:center;gap:8px;margin-bottom:16px;font-size:12px;color:var(--dim)}
+.pulse{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+</style>
+</head>
+<body>
+<h1>Server Monitor</h1>
+<div class="status-bar">
+  <div class="pulse"></div>
+  <span id="status-text">Connecting...</span>
+</div>
+<div class="grid">
+  <!-- CPU -->
+  <div class="card">
+    <h2>CPU</h2>
+    <div id="cpu-content"></div>
+  </div>
+  <!-- Memory -->
+  <div class="card">
+    <h2>Memory</h2>
+    <div id="mem-content"></div>
+  </div>
+  <!-- GPU -->
+  <div class="card" id="gpu-card" style="display:none">
+    <h2>GPU</h2>
+    <div id="gpu-content"></div>
+  </div>
+  <!-- Disk -->
+  <div class="card">
+    <h2>Disk</h2>
+    <div id="disk-content"></div>
+  </div>
+  <!-- Network -->
+  <div class="card">
+    <h2>Network</h2>
+    <div id="net-content"></div>
+  </div>
+  <!-- Sensors -->
+  <div class="card" id="sensor-card" style="display:none">
+    <h2>Sensors</h2>
+    <div id="sensor-content"></div>
+  </div>
+  <!-- Services -->
+  <div class="card">
+    <h2>Services</h2>
+    <div id="svc-content"></div>
+  </div>
+  <!-- Commands -->
+  <div class="card" id="cmd-card" style="display:none">
+    <h2>Commands</h2>
+    <div id="cmd-content"></div>
+  </div>
+</div>
+
+<script>
+function fmt(bytes){
+  if(bytes<1024)return bytes+' B';
+  if(bytes<1048576)return (bytes/1024).toFixed(1)+' KB';
+  if(bytes<1073741824)return (bytes/1048576).toFixed(1)+' MB';
+  return (bytes/1073741824).toFixed(2)+' GB';
+}
+function bar(cls,pct){
+  return '<div class="bar-wrap"><div class="bar '+cls+'" style="width:'+Math.min(pct,100)+'%"></div></div>';
+}
+function renderCPU(cpu){
+  if(!cpu||cpu.error)return '<div class="metric"><span class="label">Error</span></div>';
+  let h='<div class="metric"><span class="label">Usage</span><span class="value">'+cpu.usage_percent.toFixed(1)+'%</span></div>';
+  h+=bar('cpu',cpu.usage_percent);
+  h+='<div class="metric"><span class="label">Cores</span><span class="value">'+cpu.cores_physical+'P / '+cpu.cores_logical+'L</span></div>';
+  if(cpu.freq_current_mhz)h+='<div class="metric"><span class="label">Freq</span><span class="value">'+cpu.freq_current_mhz+' MHz</span></div>';
+  if(cpu.per_core){
+    h+='<div class="core-grid">';
+    cpu.per_core.forEach((v,i)=>{
+      h+='<div class="core"><div class="core-fill" style="height:'+v+'%"></div><div class="core-label">'+v+'%</div></div>';
+    });
+    h+='</div>';
+  }
+  return h;
+}
+function renderMem(m){
+  if(!m||m.error)return '<div class="metric"><span class="label">Error</span></div>';
+  let h='<div class="metric"><span class="label">Used</span><span class="value">'+m.used_gb+' / '+m.total_gb+' GB</span></div>';
+  h+=bar('mem',m.percent);
+  h+='<div class="metric"><span class="label">Available</span><span class="value">'+m.available_gb+' GB</span></div>';
+  return h;
+}
+function renderGPU(g){
+  if(!g||g.length===0)return '';
+  document.getElementById('gpu-card').style.display='';
+  let h='';
+  g.forEach(gpu=>{
+    h+='<div class="metric"><span class="label">Name</span><span class="value">'+gpu.name+'</span></div>';
+    h+='<div class="metric"><span class="label">Temp</span><span class="value">'+gpu.temperature_c+' °C</span></div>';
+    h+='<div class="metric"><span class="label">GPU Use</span><span class="value">'+gpu.gpu_utilization_percent+'%</span></div>';
+    h+=bar('gpu',gpu.gpu_utilization_percent);
+    h+='<div class="metric"><span class="label">VRAM</span><span class="value">'+gpu.memory_used_mb+' / '+gpu.memory_total_mb+' MB</span></div>';
+    h+=bar('gpu',(gpu.memory_used_mb/gpu.memory_total_mb)*100);
+    if(gpu.power_w!==null)h+='<div class="metric"><span class="label">Power</span><span class="value">'+gpu.power_w+' W</span></div>';
+  });
+  return h;
+}
+function renderDisk(disks){
+  if(!disks||disks.error)return '<div class="metric"><span class="label">Error</span></div>';
+  let h='';
+  disks.forEach(d=>{
+    h+='<div class="metric"><span class="label">'+d.device+' ('+d.mountpoint+')</span><span class="value">'+d.used_gb+' / '+d.total_gb+' GB</span></div>';
+    h+=bar('disk',d.percent);
+  });
+  return h;
+}
+function renderNet(net){
+  if(!net||net.error)return '<div class="metric"><span class="label">Error</span></div>';
+  let h='';
+  for(const[name,v]of Object.entries(net)){
+    h+='<div class="net-iface"><div class="iface-name">'+name+'</div>';
+    h+='<div class="metric"><span class="label">Sent</span><span class="value">'+fmt(v.bytes_sent)+'</span></div>';
+    h+='<div class="metric"><span class="label">Recv</span><span class="value">'+fmt(v.bytes_recv)+'</span></div>';
+    h+='<div class="metric"><span class="label">Err</span><span class="value">'+v.errin+' / '+v.errout+'</span></div></div>';
+  }
+  return h;
+}
+function renderSensors(data){
+  if(!data||!data.sensors||data.sensors.length===0)return '';
+  document.getElementById('sensor-card').style.display='';
+  let h='<div class="metric"><span class="label">Method</span><span class="value">'+data.method+'</span></div>';
+  h+='<table class="sensor-table"><tr><th>Name</th><th>Value</th><th>Type</th></tr>';
+  data.sensors.forEach(s=>{
+    h+='<tr><td>'+s.name+'</td><td>'+s.value+' '+s.unit+'</td><td>'+s.type+'</td></tr>';
+  });
+  h+='</table>';
+  return h;
+}
+function renderServices(svcs){
+  if(!svcs)return '';
+  let h='<div class="svc-list">';
+  svcs.forEach(s=>{
+    h+='<div class="svc"><div class="dot '+s.status+'"></div><span>'+s.display+'</span><span style="color:var(--dim);margin-left:auto">'+s.status+'</span></div>';
+  });
+  h+='</div>';
+  return h;
+}
+function renderCommands(cmds){
+  if(!cmds||cmds.length===0)return '';
+  document.getElementById('cmd-card').style.display='';
+  let h='';
+  cmds.forEach(c=>{
+    h+='<div class="cmd-block"><div class="cmd-name">'+c.name+'</div><div class="cmd-output">'+(c.output||'(empty)')+'</div></div>';
+  });
+  return h;
+}
+function update(d){
+  document.getElementById('cpu-content').innerHTML=renderCPU(d.cpu);
+  document.getElementById('mem-content').innerHTML=renderMem(d.memory);
+  document.getElementById('disk-content').innerHTML=renderDisk(d.disk);
+  document.getElementById('net-content').innerHTML=renderNet(d.network);
+  document.getElementById('svc-content').innerHTML=renderServices(d.services);
+  let gpuH=renderGPU(d.gpu);
+  if(gpuH)document.getElementById('gpu-content').innerHTML=gpuH;
+  let sensorH=renderSensors(d.sensors);
+  if(sensorH)document.getElementById('sensor-content').innerHTML=sensorH;
+  let cmdH=renderCommands(d.commands);
+  if(cmdH)document.getElementById('cmd-content').innerHTML=cmdH;
+  document.getElementById('status-text').textContent='Live — '+new Date(d.timestamp).toLocaleTimeString();
+}
+function connect(){
+  const es=new EventSource('/api/stream');
+  es.onmessage=e=>{try{update(JSON.parse(e.data))}catch(err){console.error(err)}};
+  es.onerror=()=>{
+    document.getElementById('status-text').textContent='Reconnecting...';
+    es.close();
+    setTimeout(connect,2000);
+  };
+}
+connect();
+</script>
+</body>
+</html>
