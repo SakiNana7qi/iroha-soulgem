@@ -4,14 +4,15 @@ Windows 服务器实时监控面板。通过 Web 界面展示硬件传感器、�
 
 ## 功能
 
-- **硬件传感器** — 通过 SuperDoctor 5 自动采集 CPU 温度、风扇转速、电压等（支持 SD5 / ipmitool / WMI 自动探测）
+- **硬件传感器** — 通过 SuperDoctor 5 自动采集 CPU 温度、风扇转速、电压等（支持 SD5 `sdc.bat` / ipmitool / WMI 自动探测）
 - **系统性能** — CPU 使用率（含每核心）、内存、磁盘、网络（基于 psutil）
-- **GPU 监控** — 温度、利用率、显存、功耗（基于 pynvml，轻量无中断）
+- **GPU 监控** — 温度、利用率、显存、功耗（基于 nvidia-ml-py，轻量无中断）
 - **服务状态** — 指定 Windows 服务的运行状态
-- **命令输出** — 定时执行任意命令并展示输出（支持 PowerShell）
-- **实时推送** — SSE (Server-Sent Events) 每秒推送，网页自动刷新
+- **命令输出** — 定时执行任意命令并展示输出（支持 cmd / PowerShell）
+- **实时推送** — SSE (Server-Sent Events) 推送，网页自动刷新
 - **LLM 友好** — `/api/status` 返回纯 JSON，可直接 `curl` 或供 Agent 读取
 - **运行时调频** — 网页右上角滑条可实时调整刷新间隔（100ms ~ 2000ms）
+- **Windows 服务** — 提供 NSSM 安装脚本，支持开机自启、日志轮转
 
 ## 快速开始
 
@@ -28,20 +29,43 @@ LLM/Agent 获取数据：
 curl http://localhost:8080/api/status
 ```
 
+## 注册为 Windows 服务
+
+需要 [NSSM](https://nssm.cc)（`choco install nssm`）：
+
+```bash
+tools\install_service.bat    # 安装并启动服务
+tools\uninstall_service.bat  # 停止并卸载服务
+```
+
+服务管理：
+
+```bash
+nssm start SoulGemMonitor     # 启动
+nssm stop SoulGemMonitor      # 停止
+nssm restart SoulGemMonitor   # 重启
+nssm edit SoulGemMonitor      # GUI 编辑配置
+```
+
+日志位于 `logs\service.log`（自动轮转，最大 10MB）。
+
 ## 项目结构
 
 ```
-├── main.py              # FastAPI 入口，路由与 SSE 推送
-├── config.yaml          # 配置文件（服务、命令、刷新间隔等）
-├── requirements.txt     # Python 依赖
+├── main.py                  # FastAPI 入口，路由与 SSE 推送
+├── config.yaml              # 配置文件（服务、命令、刷新间隔等）
+├── requirements.txt         # Python 依赖
 ├── collectors/
-│   ├── system.py        # CPU / 内存 / 磁盘 / 网络（psutil）
-│   ├── gpu.py           # GPU 指标（pynvml）
-│   ├── sensor.py        # 硬件传感器（SD5 sdc.bat / ipmitool / WMI）
-│   ├── services.py      # Windows 服务状态
-│   └── command.py       # 定时命令执行器
-└── static/
-    └── index.html       # 暗色主题仪表盘（单文件，嵌入 CSS/JS）
+│   ├── system.py            # CPU / 内存 / 磁盘 / 网络（psutil）
+│   ├── gpu.py               # GPU 指标（nvidia-ml-py）
+│   ├── sensor.py            # 硬件传感器（SD5 sdc.bat / ipmitool / WMI）
+│   ├── services.py          # Windows 服务状态
+│   └── command.py           # 定时命令执行器
+├── static/
+│   └── index.html           # 暗色主题仪表盘（单文件，嵌入 CSS/JS）
+└── tools/
+    ├── install_service.bat  # NSSM 服务安装脚本
+    └── uninstall_service.bat
 ```
 
 ## 配置说明
@@ -86,4 +110,4 @@ commands:
 ## 依赖
 
 - Python 3.10+
-- fastapi, uvicorn, psutil, pynvml, pyyaml
+- fastapi, uvicorn, psutil, nvidia-ml-py, pyyaml
