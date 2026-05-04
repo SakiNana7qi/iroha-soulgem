@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -27,7 +28,7 @@ def load_config():
 
 
 config = load_config()
-app = FastAPI(title="Server Monitor", docs_url=None, redoc_url=None)
+_shutdown = asyncio.Event()
 
 server_cfg = config.get("server", {})
 gpu_enabled = config.get("gpu", {}).get("enabled", True)
@@ -68,17 +69,30 @@ async def collect_all():
 
 async def background_collector():
     global _latest_snapshot
-    while True:
+    while not _shutdown.is_set():
         try:
             _latest_snapshot = await collect_all()
         except Exception as e:
             _latest_snapshot = {"error": str(e), "timestamp": datetime.now().isoformat()}
-        await asyncio.sleep(refresh_interval)
+        try:
+            await asyncio.wait_for(_shutdown.wait(), timeout=refresh_interval)
+        except asyncio.TimeoutError:
+            pass
 
 
-@app.on_event("startup")
-async def startup():
-    asyncio.create_task(background_collector())
+@asynccontextmanager
+async def lifespan(app):
+    task = asyncio.create_task(background_collector())
+    yield
+    _shutdown.set()
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+app = FastAPI(title="Server Monitor", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
 @app.get("/")
@@ -97,11 +111,14 @@ async def api_status():
 @app.get("/api/stream")
 async def api_stream():
     async def event_generator():
-        while True:
+        while not _shutdown.is_set():
             if _latest_snapshot:
                 data = json.dumps(_latest_snapshot, ensure_ascii=False)
                 yield f"data: {data}\n\n"
-            await asyncio.sleep(refresh_interval)
+            try:
+                await asyncio.wait_for(_shutdown.wait(), timeout=refresh_interval)
+            except asyncio.TimeoutError:
+                pass
 
     return StreamingResponse(
         event_generator(),
@@ -122,4 +139,4 @@ if __name__ == "__main__":
 
     host = server_cfg.get("host", "0.0.0.0")
     port = server_cfg.get("port", 8080)
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, timeout_graceful_shutdown=0)
