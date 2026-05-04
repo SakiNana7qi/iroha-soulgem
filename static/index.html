@@ -39,6 +39,8 @@ h1{font-size:20px;font-weight:600;margin-bottom:16px;color:var(--accent)}
 .sensor-table th{text-align:left;color:var(--dim);font-weight:500;padding:4px 8px;border-bottom:1px solid var(--border)}
 .sensor-table td{padding:4px 8px;border-bottom:1px solid var(--border)}
 .sensor-table tr:last-child td{border-bottom:none}
+.section+.section{margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+.section-label{font-size:11px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:.3px;margin-bottom:8px}
 .net-iface{margin-bottom:8px}
 .net-iface:last-child{margin-bottom:0}
 .iface-name{font-size:12px;color:var(--accent);margin-bottom:4px}
@@ -72,20 +74,22 @@ h1{font-size:20px;font-weight:600;margin-bottom:16px;color:var(--accent)}
     <h2>CPU</h2>
     <div id="cpu-content"></div>
   </div>
-  <!-- Memory -->
+  <!-- Memory & Disk -->
   <div class="card">
-    <h2>Memory</h2>
-    <div id="mem-content"></div>
+    <h2>Memory & Disk</h2>
+    <div class="section">
+      <div class="section-label">Memory</div>
+      <div id="mem-content"></div>
+    </div>
+    <div class="section">
+      <div class="section-label">Disk</div>
+      <div id="disk-content"></div>
+    </div>
   </div>
   <!-- GPU -->
   <div class="card" id="gpu-card" style="display:none">
     <h2>GPU</h2>
     <div id="gpu-content"></div>
-  </div>
-  <!-- Disk -->
-  <div class="card">
-    <h2>Disk</h2>
-    <div id="disk-content"></div>
   </div>
   <!-- Network -->
   <div class="card">
@@ -183,7 +187,13 @@ function renderSensors(data){
   h+='<table class="sensor-table"><tr><th>Name</th><th>Reading</th><th>High</th><th>Low</th><th>Status</th></tr>';
   data.sensors.forEach(s=>{
     let val=s.value+(s.unit?' '+s.unit:'');
-    let status=s.status?'<span style="color:var(--red)">'+s.status+'</span>':'';
+    let status='';
+    if(s.status){
+      let sc='var(--yellow)';
+      if(s.status==='Good')sc='var(--green)';
+      else if(s.status==='Triggered'||s.status==='CRITICAL'||s.status==='Unavailable')sc='var(--red)';
+      status='<span style="color:'+sc+'">'+s.status+'</span>';
+    }
     h+='<tr><td>'+s.name+'</td><td>'+val+'</td><td>'+(s.high||'')+'</td><td>'+(s.low||'')+'</td><td>'+status+'</td></tr>';
   });
   h+='</table>';
