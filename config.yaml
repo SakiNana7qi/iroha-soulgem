@@ -21,19 +21,8 @@ services:
 commands:
   - name: "学在浙大自动签到"
     cmd: "powershell -Command \"Get-Content \"$env:USERPROFILE\\.pm2\\logs\\zju-autosign-out.log\" -Tail 10\""
-    interval: 60
-  - name: "boot-time"
-    cmd: "systeminfo | findstr /B /C:\"System Boot Time\""
-    interval: 60
-  - name: "disk-free"
-    cmd: "wmic logicaldisk get caption,freespace,size"
     interval: 30
-  - name: "top-processes"
-    cmd: "powershell -Command \"Get-Process | Sort-Object CPU -Descending | Select-Object -First 10 Name, CPU, WorkingSet64 | Format-Table -AutoSize | Out-String\""
-    interval: 10
-  - name: "net-adapters"
-    cmd: "powershell -Command \"Get-NetAdapter | Select-Object Name, Status, LinkSpeed | Format-Table -AutoSize | Out-String\""
+  - name: "zhiyun-whisper"
+    cmd: "wsl tmux capture-pane -pt \"whisper\" -S -30"
     interval: 30
-  - name: "recent-events"
-    cmd: "powershell -Command \"Get-EventLog -LogName System -Newest 5 -EntryType Error,Warning 2>$null | Select-Object TimeGenerated, EntryType, Message | Format-List | Out-String\""
-    interval: 60
+
