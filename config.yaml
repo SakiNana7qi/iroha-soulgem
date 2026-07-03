@@ -18,6 +18,20 @@ services:
   - name: "sd5"
     display: "SuperDoctor 5 Service"
 
+fanctl:
+  enabled: true
+  bmc_host: "192.168.1.123"
+  bmc_user: "ADMIN"
+  bmc_password: "ADMIN"
+  interval: 3
+  zones: [0, 1, 2, 3]
+  curve:
+    normal_pwm: 18        # ~3000 RPM
+    cpu_ramp_start: 75    # °C, start ramping
+    cpu_full_speed: 88    # °C, full speed
+    gpu_ramp_start: 92    # °C, GPU has blower — only intervene if extreme
+    gpu_full_speed: 96    # °C
+
 commands:
   - name: "学在浙大自动签到"
     cmd: "powershell -Command \"Get-Content \"$env:USERPROFILE\\.pm2\\logs\\zju-autosign-out.log\" -Tail 10\""

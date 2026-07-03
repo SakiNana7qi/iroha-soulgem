@@ -51,6 +51,19 @@ h1{font-size:20px;font-weight:600;margin-bottom:16px;color:var(--accent)}
 .interval-ctrl{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);background:var(--card);border:1px solid var(--border);border-radius:6px;padding:6px 12px}
 .interval-ctrl input[type=range]{width:100px;accent-color:var(--accent);cursor:pointer}
 .interval-val{font-variant-numeric:tabular-nums;min-width:44px;text-align:right;color:var(--text);font-weight:500}
+/* fanctl */
+.mode-bar{display:flex;gap:4px;margin-bottom:12px}
+.mode-btn{flex:1;padding:6px 4px;font-size:11px;font-weight:600;border:1px solid var(--border);border-radius:4px;background:var(--bar-bg);color:var(--dim);cursor:pointer;text-align:center;transition:all .15s}
+.mode-btn.active{border-color:var(--accent);color:var(--accent);background:rgba(88,166,255,.1)}
+.mode-btn.warn.active{border-color:var(--red);color:var(--red);background:rgba(248,81,73,.1)}
+.fan-row{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12px}
+.fan-row .zone-tag{min-width:42px;font-weight:600;color:var(--accent)}
+.fan-row .rpm{min-width:50px;text-align:right;font-variant-numeric:tabular-nums}
+.fan-row input[type=range]{flex:1;accent-color:var(--green);cursor:pointer;height:4px}
+.fan-row .pwm-val{min-width:32px;text-align:right;font-variant-numeric:tabular-nums;font-weight:500}
+.fan-summary{display:flex;justify-content:space-between;margin-bottom:8px;font-size:12px;color:var(--dim)}
+.fan-summary span strong{color:var(--text);font-variant-numeric:tabular-nums}
+.fan-error{color:var(--red);font-size:12px;padding:4px 0}
 </style>
 </head>
 <body>
@@ -90,6 +103,11 @@ h1{font-size:20px;font-weight:600;margin-bottom:16px;color:var(--accent)}
   <div class="card" id="gpu-card" style="display:none">
     <h2>GPU</h2>
     <div id="gpu-content"></div>
+  </div>
+  <!-- Fan Control -->
+  <div class="card" id="fanctl-card" style="display:none">
+    <h2>Fan Control</h2>
+    <div id="fanctl-content"></div>
   </div>
   <!-- Network -->
   <div class="card">
@@ -217,6 +235,74 @@ function renderCommands(cmds){
   });
   return h;
 }
+function renderFanctl(fc){
+  if(!fc||!fc.running){document.getElementById('fanctl-card').style.display='none';return'';}
+  document.getElementById('fanctl-card').style.display='';
+  var h='';
+  // mode bar
+  var modes=['curve','manual','full','bios'];
+  var labels={curve:'Curve',manual:'Manual',full:'Full',bios:'BIOS'};
+  var warnMode=(fc.mode==='full'||fc.mode==='manual');
+  h+='<div class="mode-bar">';
+  modes.forEach(function(m){
+    var cls='mode-btn'+(fc.mode===m?' active':'')+((m==='full'||m==='manual')&&fc.mode===m?' warn':'');
+    h+='<button class="'+cls+'" onclick="setFCMode(\''+m+'\')">'+labels[m]+'</button>';
+  });
+  h+='</div>';
+
+  // summary
+  var tgt=fc.target_pwm>0?fc.target_pwm+'%':'---';
+  h+='<div class="fan-summary"><span>Target: <strong>'+tgt+'</strong></span><span>Mode: <strong>'+fc.mode+'</strong></span></div>';
+
+  // fan RPMs
+  var fans=fc.current_fan_rpm||{};
+  var keys=Object.keys(fans).sort();
+  for(var i=0;i<keys.length;i++){
+    var rpm=fans[keys[i]];
+    h+='<div class="fan-row"><span class="zone-tag">'+keys[i]+'</span><span class="rpm">'+Math.round(rpm)+' RPM</span></div>';
+  }
+
+  // PWM sliders (only in manual mode)
+  if(fc.mode==='manual'){
+    h+='<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">';
+    var pwm=fc.current_pwm||{};
+    var zoneKeys=Object.keys(pwm).sort();
+    zoneKeys.forEach(function(z){
+      var v=pwm[z]||0;
+      h+='<div class="fan-row"><span class="zone-tag">Zone '+z+'</span>';
+      h+='<input type="range" min="0" max="100" value="'+v+'" onchange="setFCPWM('+z+',this.value)">';
+      h+='<span class="pwm-val">'+v+'%</span></div>';
+    });
+    h+='</div>';
+  }
+
+  // key temps
+  var temps=fc.current_temps||{};
+  var tcpu1=temps['CPU1 Temp']||0;
+  var tcpu2=temps['CPU2 Temp']||0;
+  var tgpu0=temps['GPU0']||0;
+  var tgpu1=temps['GPU1']||0;
+  h+='<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:12px">';
+  h+='<div class="fan-row"><span class="zone-tag">CPU1</span><span style="color:'+(tcpu1>70?'var(--red)':'var(--dim)')+'">'+tcpu1.toFixed(0)+'°C</span></div>';
+  h+='<div class="fan-row"><span class="zone-tag">CPU2</span><span style="color:'+(tcpu2>70?'var(--red)':'var(--dim)')+'">'+tcpu2.toFixed(0)+'°C</span></div>';
+  if(tgpu0>0)h+='<div class="fan-row"><span class="zone-tag">GPU0</span><span style="color:'+(tgpu0>80?'var(--red)':'var(--dim)')+'">'+tgpu0.toFixed(0)+'°C</span></div>';
+  if(tgpu1>0)h+='<div class="fan-row"><span class="zone-tag">GPU1</span><span style="color:'+(tgpu1>80?'var(--red)':'var(--dim)')+'">'+tgpu1.toFixed(0)+'°C</span></div>';
+  h+='</div>';
+
+  if(fc.error)h+='<div class="fan-error">Error: '+fc.error+'</div>';
+  return h;
+}
+function setFCMode(mode){
+  fetch('/api/fanctl/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:mode})}).catch(function(){});
+}
+var _fcPwmTimer=null;
+function setFCPWM(zone,value){
+  clearTimeout(_fcPwmTimer);
+  _fcPwmTimer=setTimeout(function(){
+    var zones={};zones[zone]=parseInt(value);
+    fetch('/api/fanctl/pwm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({zones:zones})}).catch(function(){});
+  },200);
+}
 function update(d){
   document.getElementById('cpu-content').innerHTML=renderCPU(d.cpu);
   document.getElementById('mem-content').innerHTML=renderMem(d.memory);
@@ -229,6 +315,8 @@ function update(d){
   if(sensorH)document.getElementById('sensor-content').innerHTML=sensorH;
   let cmdH=renderCommands(d.commands);
   if(cmdH)document.getElementById('cmd-content').innerHTML=cmdH;
+  var fcH=renderFanctl(d.fanctl);
+  if(fcH)document.getElementById('fanctl-content').innerHTML=fcH;
   document.getElementById('status-text').textContent='Live — '+new Date(d.timestamp).toLocaleTimeString();
 }
 function connect(){

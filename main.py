@@ -16,6 +16,7 @@ from collectors.gpu import get_gpu
 from collectors.sensor import get_sensors
 from collectors.services import get_services
 from collectors.command import CommandRunner
+from collectors import fanctl
 
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
 
@@ -35,6 +36,7 @@ gpu_enabled = config.get("gpu", {}).get("enabled", True)
 service_list = config.get("services", [])
 command_configs = config.get("commands", [])
 refresh_interval = server_cfg.get("refresh_interval", 1)
+fanctl_enabled = config.get("fanctl", {}).get("enabled", False)
 
 class IntervalUpdate(BaseModel):
     interval: int
@@ -64,6 +66,7 @@ async def collect_all():
         "gpu": gpu,
         "services": services,
         "commands": commands,
+        "fanctl": fanctl.get_state() if fanctl_enabled else None,
     }
 
 
@@ -82,6 +85,9 @@ async def background_collector():
 
 @asynccontextmanager
 async def lifespan(app):
+    if fanctl_enabled:
+        fanctl.configure(config.get("fanctl", {}))
+        fanctl.start()
     task = asyncio.create_task(background_collector())
     yield
     _shutdown.set()
@@ -90,6 +96,8 @@ async def lifespan(app):
         await task
     except asyncio.CancelledError:
         pass
+    if fanctl_enabled:
+        fanctl.stop()
 
 
 app = FastAPI(title="Server Monitor", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -132,6 +140,40 @@ async def set_interval(body: IntervalUpdate):
     global refresh_interval
     refresh_interval = max(0.1, min(2.0, body.interval / 1000.0))
     return {"interval_ms": int(refresh_interval * 1000)}
+
+
+class FanModeUpdate(BaseModel):
+    mode: str  # curve | manual | full | bios
+
+
+class FanPwmUpdate(BaseModel):
+    zones: dict  # {zone_number: pwm_value}
+
+
+@app.get("/api/fanctl")
+async def api_fanctl_status():
+    if not fanctl_enabled:
+        return JSONResponse({"error": "fanctl disabled"}, status_code=404)
+    return JSONResponse(fanctl.get_state())
+
+
+@app.post("/api/fanctl/mode")
+async def api_fanctl_mode(body: FanModeUpdate):
+    if not fanctl_enabled:
+        return JSONResponse({"error": "fanctl disabled"}, status_code=404)
+    try:
+        fanctl.set_mode(body.mode)
+        return JSONResponse({"ok": True, "mode": body.mode})
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+@app.post("/api/fanctl/pwm")
+async def api_fanctl_pwm(body: FanPwmUpdate):
+    if not fanctl_enabled:
+        return JSONResponse({"error": "fanctl disabled"}, status_code=404)
+    fanctl.set_manual_pwm(body.zones)
+    return JSONResponse({"ok": True, "zones": body.zones})
 
 
 if __name__ == "__main__":

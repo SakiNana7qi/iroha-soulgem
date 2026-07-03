@@ -2,12 +2,16 @@ import shutil
 import subprocess
 import os
 import re
+import json
 
 
 def _detect_method(config_method):
     if config_method and config_method != "auto":
         return config_method
 
+    # Only use ipmitool if the CLI binary is actually installed.
+    # pyghmi is reserved for fanctl.py to avoid creating duplicate
+    # BMC sessions that would block the event loop at startup.
     if shutil.which("ipmitool"):
         return "ipmitool"
 
@@ -162,6 +166,90 @@ def _read_wmi():
         return sensors
     except Exception:
         return []
+
+
+def _read_ipmitool(ipmitool_path):
+    """Read sensors via CLI ipmitool, or pyghmi as fallback."""
+    # Try CLI ipmitool first
+    if shutil.which(ipmitool_path):
+        try:
+            result = subprocess.run(
+                [ipmitool_path, "sdr", "elist"],
+                capture_output=True, text=True, timeout=15,
+            )
+            sensors = []
+            for line in result.stdout.strip().splitlines():
+                parts = line.split("|")
+                if len(parts) < 4:
+                    continue
+                name = parts[0].strip()
+                value_raw = parts[1].strip()
+                status_raw = parts[3].strip()
+                val_match = re.match(r"([\d.]+)\s*(.*)", value_raw)
+                value = val_match.group(1) if val_match else value_raw
+                unit = val_match.group(2) if val_match else ""
+                sensors.append({
+                    "name": name,
+                    "value": value,
+                    "unit": unit,
+                    "high": "",
+                    "low": "",
+                    "status": status_raw if status_raw else "Good",
+                    "type": _classify(name),
+                })
+            return sensors
+        except Exception:
+            pass
+
+    # Fallback to pyghmi (BMC LAN connection)
+    try:
+        from pyghmi.ipmi import command
+
+        bmc_cfg = _load_bmc_config()
+        ipmi = command.Command(
+            bmc=bmc_cfg.get("bmc_host", "127.0.0.1"),
+            userid=bmc_cfg.get("bmc_user", "ADMIN"),
+            password=bmc_cfg.get("bmc_password", "ADMIN"),
+            keepalive=True,
+        )
+        sensors = []
+        for s in ipmi.get_sensor_data():
+            if not s.name or not s.type:
+                continue
+            status = "Good"
+            if s.health and s.health > 0:
+                status = "Triggered"
+            if s.unavailable:
+                status = "Unavailable"
+
+            sensors.append({
+                "name": s.name,
+                "value": str(s.value) if s.value is not None else "",
+                "unit": s.units or "",
+                "high": "",
+                "low": "",
+                "status": status,
+                "type": s.type.lower() if s.type else _classify(s.name),
+            })
+        return sensors
+    except Exception:
+        return []
+
+
+def _load_bmc_config():
+    try:
+        config_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "config.yaml",
+        )
+        if os.path.exists(config_path):
+            import yaml
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            return cfg.get("fanctl", {})
+    except Exception:
+        pass
+    return {}
 
 
 def get_sensors(config):
