@@ -29,8 +29,8 @@ fanctl:
     normal_pwm: 18        # ~3000 RPM
     cpu_ramp_start: 75    # °C, start ramping
     cpu_full_speed: 88    # °C, full speed
-    gpu_ramp_start: 92    # °C, GPU has blower — only intervene if extreme
-    gpu_full_speed: 96    # °C
+    gpu_ramp_start: 81    # °C, GPU has blower — only intervene if extreme
+    gpu_full_speed: 87    # °C
 
 commands:
   - name: "学在浙大自动签到"
