@@ -6,3 +6,5 @@ logs/
 *.log.*
 *.log
 *.mdmp
+fanctl-password.json
+fanctl-password.json.tmp

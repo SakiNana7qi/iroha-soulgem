@@ -64,6 +64,15 @@ h1{font-size:20px;font-weight:600;margin-bottom:16px;color:var(--accent)}
 .fan-summary{display:flex;justify-content:space-between;margin-bottom:8px;font-size:12px;color:var(--dim)}
 .fan-summary span strong{color:var(--text);font-variant-numeric:tabular-nums}
 .fan-error{color:var(--red);font-size:12px;padding:4px 0}
+.fan-action{font-size:12px;color:var(--dim);padding-top:8px}
+.password-dialog{background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:20px;width:min(360px,90vw);margin:auto}
+.password-dialog::backdrop{background:rgba(0,0,0,.65)}
+.password-dialog h2{font-size:16px;margin-bottom:12px}
+.password-dialog p{font-size:12px;color:var(--dim);margin:8px 0 16px}
+.password-dialog label{display:block;font-size:13px;margin-bottom:6px}
+.password-dialog input{width:100%;padding:8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px}
+.password-actions{display:flex;gap:8px;justify-content:flex-end}
+.password-actions button{padding:8px 12px;background:var(--bar-bg);color:var(--text);border:1px solid var(--border);border-radius:4px;cursor:pointer}
 </style>
 </head>
 <body>
@@ -108,6 +117,7 @@ h1{font-size:20px;font-weight:600;margin-bottom:16px;color:var(--accent)}
   <div class="card" id="fanctl-card" style="display:none">
     <h2>Fan Control</h2>
     <div id="fanctl-content"></div>
+    <div id="fanctl-action" class="fan-action" role="status" aria-live="polite"></div>
   </div>
   <!-- Network -->
   <div class="card">
@@ -131,6 +141,18 @@ h1{font-size:20px;font-weight:600;margin-bottom:16px;color:var(--accent)}
   </div>
 </div>
 
+<dialog id="fan-password-dialog" class="password-dialog">
+  <form id="fan-password-form">
+    <h2>验证风扇控制密码</h2>
+    <label for="fan-password-input">密码</label>
+    <input id="fan-password-input" type="password" autocomplete="current-password" maxlength="1024" required autofocus>
+    <p>密码仅在当前页面临时记住，刷新后需要重新输入。</p>
+    <div class="password-actions">
+      <button type="button" onclick="document.getElementById('fan-password-dialog').close()">取消</button>
+      <button type="submit">确认</button>
+    </div>
+  </form>
+</dialog>
 <script>
 function fmt(bytes){
   if(bytes<1024)return bytes+' B';
@@ -168,7 +190,7 @@ function renderGPU(g){
   document.getElementById('gpu-card').style.display='';
   let h='';
   g.forEach(gpu=>{
-    h+='<div class="metric"><span class="label">Name</span><span class="value">'+gpu.name+'</span></div>';
+    h+='<div class="metric"><span class="label">Name</span><span class="value">'+escapeHTML(gpu.name)+'</span></div>';
     h+='<div class="metric"><span class="label">Temp</span><span class="value">'+gpu.temperature_c+' °C</span></div>';
     h+='<div class="metric"><span class="label">GPU Use</span><span class="value">'+gpu.gpu_utilization_percent+'%</span></div>';
     h+=bar('gpu',gpu.gpu_utilization_percent);
@@ -182,7 +204,7 @@ function renderDisk(disks){
   if(!disks||disks.error)return '<div class="metric"><span class="label">Error</span></div>';
   let h='';
   disks.forEach(d=>{
-    h+='<div class="metric"><span class="label">'+d.device+' ('+d.mountpoint+')</span><span class="value">'+d.used_gb+' / '+d.total_gb+' GB</span></div>';
+    h+='<div class="metric"><span class="label">'+escapeHTML(d.device)+' ('+escapeHTML(d.mountpoint)+')</span><span class="value">'+d.used_gb+' / '+d.total_gb+' GB</span></div>';
     h+=bar('disk',d.percent);
   });
   return h;
@@ -191,7 +213,7 @@ function renderNet(net){
   if(!net||net.error)return '<div class="metric"><span class="label">Error</span></div>';
   let h='';
   for(const[name,v]of Object.entries(net)){
-    h+='<div class="net-iface"><div class="iface-name">'+name+'</div>';
+    h+='<div class="net-iface"><div class="iface-name">'+escapeHTML(name)+'</div>';
     h+='<div class="metric"><span class="label">Sent</span><span class="value">'+fmt(v.bytes_sent)+'</span></div>';
     h+='<div class="metric"><span class="label">Recv</span><span class="value">'+fmt(v.bytes_recv)+'</span></div>';
     h+='<div class="metric"><span class="label">Err</span><span class="value">'+v.errin+' / '+v.errout+'</span></div></div>';
@@ -201,7 +223,7 @@ function renderNet(net){
 function renderSensors(data){
   if(!data||!data.sensors||data.sensors.length===0)return '';
   document.getElementById('sensor-card').style.display='';
-  let h='<div class="metric"><span class="label">Method</span><span class="value">'+data.method+'</span></div>';
+  let h='<div class="metric"><span class="label">Method</span><span class="value">'+escapeHTML(data.method)+'</span></div>';
   h+='<table class="sensor-table"><tr><th>Name</th><th>Reading</th><th>High</th><th>Low</th><th>Status</th></tr>';
   data.sensors.forEach(s=>{
     let val=s.value+(s.unit?' '+s.unit:'');
@@ -210,9 +232,9 @@ function renderSensors(data){
       let sc='var(--yellow)';
       if(s.status==='Good')sc='var(--green)';
       else if(s.status==='Triggered'||s.status==='CRITICAL'||s.status==='Unavailable')sc='var(--red)';
-      status='<span style="color:'+sc+'">'+s.status+'</span>';
+      status='<span style="color:'+sc+'">'+escapeHTML(s.status)+'</span>';
     }
-    h+='<tr><td>'+s.name+'</td><td>'+val+'</td><td>'+(s.high||'')+'</td><td>'+(s.low||'')+'</td><td>'+status+'</td></tr>';
+    h+='<tr><td>'+escapeHTML(s.name)+'</td><td>'+escapeHTML(val)+'</td><td>'+escapeHTML(s.high||'')+'</td><td>'+escapeHTML(s.low||'')+'</td><td>'+status+'</td></tr>';
   });
   h+='</table>';
   return h;
@@ -221,7 +243,7 @@ function renderServices(svcs){
   if(!svcs)return '';
   let h='<div class="svc-list">';
   svcs.forEach(s=>{
-    h+='<div class="svc"><div class="dot '+s.status+'"></div><span>'+s.display+'</span><span style="color:var(--dim);margin-left:auto">'+s.status+'</span></div>';
+    h+='<div class="svc"><div class="dot '+escapeHTML(s.status)+'"></div><span>'+escapeHTML(s.display)+'</span><span style="color:var(--dim);margin-left:auto">'+escapeHTML(s.status)+'</span></div>';
   });
   h+='</div>';
   return h;
@@ -231,7 +253,7 @@ function renderCommands(cmds){
   document.getElementById('cmd-card').style.display='';
   let h='';
   cmds.forEach(c=>{
-    h+='<div class="cmd-block"><div class="cmd-name">'+c.name+'</div><div class="cmd-output">'+(c.output||'(empty)')+'</div></div>';
+    h+='<div class="cmd-block"><div class="cmd-name">'+escapeHTML(c.name)+'</div><div class="cmd-output">'+escapeHTML(c.output||'(empty)')+'</div></div>';
   });
   return h;
 }
@@ -263,7 +285,7 @@ function renderFanctl(fc){
   var keys=Object.keys(fans).sort();
   for(var i=0;i<keys.length;i++){
     var rpm=fans[keys[i]];
-    h+='<div class="fan-row"><span class="zone-tag">'+keys[i]+'</span><span class="rpm">'+Math.round(rpm)+' RPM</span></div>';
+    h+='<div class="fan-row"><span class="zone-tag">'+escapeHTML(keys[i])+'</span><span class="rpm">'+Math.round(rpm)+' RPM</span></div>';
   }
 
   // PWM sliders (only in manual mode)
@@ -298,15 +320,75 @@ function renderFanctl(fc){
   return h;
 }
 function setFCMode(mode){
-  fetch('/api/fanctl/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:mode})}).catch(function(){});
+  sendFanControl('/api/fanctl/mode',{mode:mode});
 }
 var _fcPwmTimer=null;
+var _fcPendingZones={};
 function setFCPWM(zone,value){
+  _fcPendingZones[zone]=parseInt(value);
   clearTimeout(_fcPwmTimer);
   _fcPwmTimer=setTimeout(function(){
-    var zones={};zones[zone]=parseInt(value);
-    fetch('/api/fanctl/pwm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({zones:zones})}).catch(function(){});
+    var zones=_fcPendingZones;
+    _fcPendingZones={};
+    sendFanControl('/api/fanctl/pwm',{zones:zones});
   },200);
+}
+var _fanPassword=null;
+var _fanPasswordPrompt=null;
+var _fanControlBusy=false;
+function requestFanPassword(){
+  if(_fanPassword!==null)return Promise.resolve(_fanPassword);
+  if(_fanPasswordPrompt)return _fanPasswordPrompt;
+  var dialog=document.getElementById('fan-password-dialog');
+  var input=document.getElementById('fan-password-input');
+  input.value='';
+  _fanPasswordPrompt=new Promise(function(resolve){
+    document.getElementById('fan-password-form').onsubmit=function(event){
+      event.preventDefault();
+      if(!input.value)return;
+      _fanPassword=input.value;
+      input.value='';
+      dialog.close();
+    };
+    dialog.onclose=function(){
+      input.value='';
+      _fanPasswordPrompt=null;
+      resolve(_fanPassword);
+    };
+    dialog.showModal();
+  });
+  return _fanPasswordPrompt;
+}
+async function sendFanControl(path,body){
+  var message=document.getElementById('fanctl-action');
+  if(_fanControlBusy){message.textContent='请等待当前操作完成后再修改。';return false;}
+  _fanControlBusy=true;
+  try{
+    var password=await requestFanPassword();
+    if(password===null){message.textContent='已取消，未修改风扇设置。';return false;}
+    message.textContent='正在验证并提交设置…';
+    var response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,password:password})});
+    var result=await response.json();
+    if(!response.ok){
+      if(response.status===401){
+        _fanPassword=null;
+        message.textContent='密码错误，请重新操作并输入密码。';
+      }else if(response.status===503){
+        _fanPassword=null;
+        message.textContent='尚未配置风扇控制密码，请联系管理员。';
+      }else{
+        message.textContent='设置失败：'+(result.error||result.detail||'请求失败');
+      }
+      return false;
+    }
+    message.textContent='设置已提交，等待风扇状态更新。';
+    return true;
+  }catch(error){
+    message.textContent='请求失败，请检查连接后重试。';
+    return false;
+  }finally{
+    _fanControlBusy=false;
+  }
 }
 function update(d){
   document.getElementById('cpu-content').innerHTML=renderCPU(d.cpu);

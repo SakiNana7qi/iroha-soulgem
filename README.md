@@ -123,8 +123,8 @@ commands:
 | `/api/stream` | GET | SSE 实时推送流 |
 | `/api/interval` | POST | 修改刷新间隔，body: `{"interval": 1000}`（ms） |
 | `/api/fanctl` | GET | 风扇控制状态（当前模式、PWM、转速、温度） |
-| `/api/fanctl/mode` | POST | 切换模式，body: `{"mode": "curve|manual|full|bios"}` |
-| `/api/fanctl/pwm` | POST | 手动 PWM（仅 manual 模式），body: `{"zones": {"0": 18, "1": 18}}` |
+| `/api/fanctl/mode` | POST | 切换模式，body: `{"mode": "curve|manual|full|bios", "password": "控制密码"}` |
+| `/api/fanctl/pwm` | POST | 手动 PWM（仅 manual 模式），body: `{"zones": {"0": 18, "1": 18}, "password": "控制密码"}` |
 
 ## 风扇控制
 
@@ -138,6 +138,23 @@ Dashboard 内置 Supermicro BMC 风扇温控。BMC 通过 pyghmi（纯 Python IP
 | **Manual** | 固定各 Zone PWM（0-100%），网页滑块实时调节 | 无 |
 | **Full** | 全速 100% PWM | — |
 | **BIOS** | 还原 BMC Optimal 模式，由 BMC 自行管理 | BMC 接管 |
+
+### 设置风扇控制密码
+
+修改模式和 PWM 必须通过服务端密码验证；监控页面、JSON 状态和 SSE 仍可直接读取。后台自动温控不受这项验证影响。
+
+在仓库目录执行以下命令，输入两次至少 12 字符的独立控制密码，然后重启服务：
+
+```powershell
+python tools/set_fan_password.py
+nssm restart SoulGemMonitor
+```
+
+密码输入不回显，支持中文；设置工具只保存随机盐和 PBKDF2-SHA256 哈希（600,000 次迭代），文件 `fanctl-password.json` 已加入 `.gitignore`，不会存入 `config.yaml` 或复用 BMC 密码。未设置、文件损坏或无法读取时，写接口返回 HTTP 503 并保持锁定；缺少或错误密码返回 HTTP 401。
+
+网页首次修改时弹出密码框，只在当前页面内存中暂存密码，不写入浏览器存储；刷新页面或密码错误后需重新输入。取消输入不会修改设置。重置密码时再次运行同一命令并重启服务。
+
+Agent 调用写接口时，将 `password` 放在 JSON body 中，不要放在 URL 参数中。当前 HTTP 入口不会加密传输密码，公网使用应配合 HTTPS。
 
 ### 工作原理
 
@@ -168,7 +185,14 @@ BMC 写入失败会显示错误并在后续控制循环重试；`target_pwm` 表
 ## 回归检查
 
 ```bash
+pip install -r requirements-dev.txt
 python -m unittest discover -s tests -v
 ```
 
 测试模拟硬件和 BMC，不启动服务或操作实际风扇。
+
+安装 Node.js 后可检查网页密码交互和渲染：
+
+```bash
+node tests/test_dashboard.js
+```

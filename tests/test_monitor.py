@@ -6,7 +6,7 @@ from contextlib import ExitStack
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import main
 from collectors import fanctl
@@ -243,7 +243,7 @@ class CollectorTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("timestamp", snapshot)
 
     async def test_pwm_api_returns_client_error_for_unknown_zone(self):
-        with patch.object(main, "fanctl_enabled", True), patch.object(fanctl, "set_manual_pwm", side_effect=ValueError("Unknown fan zones")):
+        with patch.object(main, "fanctl_enabled", True), patch.object(main, "require_fan_password", new_callable=AsyncMock), patch.object(fanctl, "set_manual_pwm", side_effect=ValueError("Unknown fan zones")):
             response = await main.api_fanctl_pwm(main.FanPwmUpdate(zones={99: 20}))
             self.assertEqual(response.status_code, 400)
 

@@ -6,10 +6,10 @@ from datetime import datetime
 from pathlib import Path
 
 import yaml
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, SecretStr
 
 from collectors.system import get_cpu, get_memory, get_network, get_disk
 from collectors.gpu import get_gpu
@@ -17,6 +17,7 @@ from collectors.sensor import get_sensors
 from collectors.services import get_services
 from collectors.command import CommandRunner
 from collectors import fanctl
+from fan_auth import FanControlPassword
 
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
 
@@ -37,6 +38,8 @@ service_list = config.get("services", [])
 command_configs = config.get("commands", [])
 refresh_interval = server_cfg.get("refresh_interval", 1)
 fanctl_enabled = config.get("fanctl", {}).get("enabled", False)
+fan_password = FanControlPassword.load()
+_fan_auth_lock = asyncio.Lock()
 
 class IntervalUpdate(BaseModel):
     interval: int
@@ -147,12 +150,29 @@ async def set_interval(body: IntervalUpdate):
     return {"interval_ms": int(refresh_interval * 1000)}
 
 
-class FanModeUpdate(BaseModel):
+class FanAuthRequest(BaseModel):
+    password: SecretStr | None = Field(default=None, max_length=1024)
+
+
+class FanModeUpdate(FanAuthRequest):
     mode: str  # curve | manual | full | bios
 
 
-class FanPwmUpdate(BaseModel):
+class FanPwmUpdate(FanAuthRequest):
     zones: dict[int, int]  # {zone_number: pwm_value}
+
+
+async def require_fan_password(password):
+    if fan_password is None:
+        raise HTTPException(status_code=503, detail="Fan-control password is not configured")
+    if password is None or not password.get_secret_value():
+        raise HTTPException(status_code=401, detail="Fan-control password required")
+    # Password hashing must not stall SSE/API responses or run many costly
+    # verifications concurrently in the shared worker pool.
+    async with _fan_auth_lock:
+        valid = await asyncio.to_thread(fan_password.verify, password.get_secret_value())
+    if not valid:
+        raise HTTPException(status_code=401, detail="Incorrect fan-control password")
 
 
 @app.get("/api/fanctl")
@@ -166,6 +186,7 @@ async def api_fanctl_status():
 async def api_fanctl_mode(body: FanModeUpdate):
     if not fanctl_enabled:
         return JSONResponse({"error": "fanctl disabled"}, status_code=404)
+    await require_fan_password(body.password)
     try:
         fanctl.set_mode(body.mode)
         return JSONResponse({"ok": True, "mode": body.mode})
@@ -177,6 +198,7 @@ async def api_fanctl_mode(body: FanModeUpdate):
 async def api_fanctl_pwm(body: FanPwmUpdate):
     if not fanctl_enabled:
         return JSONResponse({"error": "fanctl disabled"}, status_code=404)
+    await require_fan_password(body.password)
     try:
         fanctl.set_manual_pwm(body.zones)
         return JSONResponse({"ok": True, "zones": body.zones})
