@@ -235,9 +235,13 @@ function renderCommands(cmds){
   });
   return h;
 }
+function escapeHTML(value){
+  return String(value).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});
+}
 function renderFanctl(fc){
-  if(!fc||!fc.running){document.getElementById('fanctl-card').style.display='none';return'';}
+  if(!fc||(!fc.running&&!fc.error)){document.getElementById('fanctl-card').style.display='none';return'';}
   document.getElementById('fanctl-card').style.display='';
+  if(!fc.running)return '<div class="fan-error">Fan control stopped: '+escapeHTML(fc.error)+'</div>';
   var h='';
   // mode bar
   var modes=['curve','manual','full','bios'];
@@ -289,7 +293,8 @@ function renderFanctl(fc){
   if(tgpu1>0)h+='<div class="fan-row"><span class="zone-tag">GPU1</span><span style="color:'+(tgpu1>80?'var(--red)':'var(--dim)')+'">'+tgpu1.toFixed(0)+'°C</span></div>';
   h+='</div>';
 
-  if(fc.error)h+='<div class="fan-error">Error: '+fc.error+'</div>';
+  if(fc.failsafe)h+='<div class="fan-error">Temperature unavailable — requesting 100% PWM</div>';
+  if(fc.error)h+='<div class="fan-error">Error: '+escapeHTML(fc.error)+'</div>';
   return h;
 }
 function setFCMode(mode){

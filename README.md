@@ -98,8 +98,8 @@ fanctl:
     normal_pwm: 18       # 日常 PWM%，约 3000 RPM
     cpu_ramp_start: 75   # CPU 超过此温度开始提高转速（°C）
     cpu_full_speed: 88   # CPU 超过此温度风扇满速（°C）
-    gpu_ramp_start: 92   # GPU 超过此温度开始介入（°C）
-    gpu_full_speed: 96   # GPU 超过此温度风扇满速（°C）
+    gpu_ramp_start: 81   # GPU 超过此温度开始介入（°C）
+    gpu_full_speed: 87   # GPU 超过此温度风扇满速（°C）
 
 services:
   - name: "sshd"         # Windows 服务名
@@ -148,7 +148,13 @@ fanctl 模块在后台线程中运行，每 3 秒执行一次循环：
 3. 计算目标 PWM：正常情况下维持 `normal_pwm`，超过 `ramp_start` 后线性提升，达到 `full_speed` 时满速
 4. 通过 IPMI raw command（`0x30 0x70 0x66`）写入各 Zone PWM
 
-**注意：** GPU 温度默认阈值较高（92°C），因为 RTX 4090 等 GPU 自带涡轮风扇散热，系统风扇无需响应 GPU 负载。如果你的 GPU 是开放式散热，可酌情降低阈值。
+GPU 温控阈值由 `config.yaml` 决定，当前为 81°C 开始介入、87°C 满速；应按实际显卡和机箱散热条件调整。
+
+Curve 模式下，CPU 温度缺失、已识别的 CPU/GPU 消失或温度读取失败时，会请求所有 Zone 使用 100% PWM，并通过 API 的 `fanctl.failsafe`、`fanctl.error` 和面板显示故障。有效温度恢复后自动恢复曲线控制。没有 NVIDIA 驱动的纯 CPU 服务器不因缺少 GPU 触发此保护；Manual 和 BIOS 模式仍遵循所选模式。
+
+BMC 写入失败会显示错误并在后续控制循环重试；`target_pwm` 表示目标值，实际读回值见 `current_pwm`，不能把目标值当作已经写入成功。手动 PWM 接口按 Zone 合并更新，未提交的 Zone 保留原设定，未配置的 Zone 返回 HTTP 400。
+
+阻塞的硬件采集在工作线程运行，命令采集与其并行，避免阻塞网页和 API。刷新滑条控制循环等待和 SSE 推送间隔；完整快照的更新速度仍取决于采集耗时。
 
 ### 禁用风扇控制
 
@@ -158,3 +164,11 @@ fanctl 模块在后台线程中运行，每 3 秒执行一次循环：
 
 - Python 3.10+
 - fastapi, uvicorn, psutil, nvidia-ml-py, pyyaml, pyghmi
+
+## 回归检查
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+测试模拟硬件和 BMC，不启动服务或操作实际风扇。

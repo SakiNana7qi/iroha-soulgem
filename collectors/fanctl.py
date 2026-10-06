@@ -10,6 +10,8 @@ Modes:
 import threading
 import time
 import logging
+import math
+from copy import deepcopy
 
 import pynvml
 
@@ -42,7 +44,8 @@ _state = {
     "current_fan_rpm": {},
     "current_temps": {},
     "target_pwm": 20,
-    "config": dict(DEFAULT_CONFIG),
+    "failsafe": False,
+    "config": deepcopy(DEFAULT_CONFIG),
 }
 _lock = threading.Lock()
 
@@ -51,6 +54,8 @@ _thread = None
 _stop_event = threading.Event()
 _ipmi = None
 _nvml_ok = False
+_expected_cpu_sensors = set()
+_expected_gpu_count = 0
 
 
 _ipmi_lock = threading.Lock()
@@ -80,7 +85,8 @@ def _init_nvml():
         pynvml.nvmlInit()
         _nvml_ok = True
         return True
-    except Exception:
+    except (pynvml.NVMLError_LibraryNotFound, pynvml.NVMLError_DriverNotLoaded):
+        # A machine without an NVIDIA driver is a supported CPU-only setup.
         return False
 
 
@@ -88,33 +94,50 @@ def _init_nvml():
 
 def _read_cpu_temps():
     """Read CPU temperatures from BMC."""
-    try:
-        ipmi = _get_ipmi()
-        temps = {}
-        for s in ipmi.get_sensor_data():
-            if s.type == "Temperature" and s.value is not None:
-                temps[s.name] = s.value
-        return temps
-    except Exception as e:
-        logger.warning(f"BMC temp read failed: {e}")
-        return {}
+    ipmi = _get_ipmi()
+    temps = {}
+    cpu_names = set()
+    for s in ipmi.get_sensor_data():
+        if s.type != "Temperature":
+            continue
+        is_cpu = "cpu" in s.name.lower()
+        valid = (
+            not getattr(s, "unavailable", False)
+            and isinstance(s.value, (int, float))
+            and math.isfinite(s.value)
+        )
+        if is_cpu and not valid:
+            raise RuntimeError(f"CPU temperature unavailable: {s.name}")
+        if valid:
+            temps[s.name] = s.value
+            if is_cpu:
+                cpu_names.add(s.name)
+    if not cpu_names:
+        raise RuntimeError("No CPU temperature sensors available")
+    missing = _expected_cpu_sensors - cpu_names
+    if missing:
+        raise RuntimeError(f"CPU temperature sensors missing: {', '.join(sorted(missing))}")
+    _expected_cpu_sensors.update(cpu_names)
+    return temps
 
 
 def _read_gpu_temps():
     """Read GPU temperatures via NVML."""
+    global _expected_gpu_count
     if not _init_nvml():
         return {}
-    try:
-        count = pynvml.nvmlDeviceGetCount()
-        temps = {}
-        for i in range(count):
-            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-            temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
-            temps[f"GPU{i}"] = temp
-        return temps
-    except Exception as e:
-        logger.warning(f"NVML temp read failed: {e}")
-        return {}
+    count = pynvml.nvmlDeviceGetCount()
+    if count < _expected_gpu_count:
+        raise RuntimeError("Previously detected GPUs are missing")
+    _expected_gpu_count = count
+    temps = {}
+    for i in range(count):
+        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+        temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+        if not isinstance(temp, (int, float)) or not math.isfinite(temp):
+            raise RuntimeError(f"GPU{i} temperature unavailable")
+        temps[f"GPU{i}"] = temp
+    return temps
 
 
 def _read_fans():
@@ -132,32 +155,45 @@ def _read_fans():
 
 # ── PWM write ──────────────────────────────────────────────────────
 
+def _raw_command(**kwargs):
+    """pyghmi can return BMC errors without raising an exception."""
+    response = _get_ipmi().raw_command(**kwargs)
+    if not isinstance(response, dict):
+        raise RuntimeError("Invalid BMC response")
+    if response.get("error") or response.get("code", 0):
+        raise RuntimeError(
+            f"BMC rejected command: {response.get('error') or 'completion code'} "
+            f"(code={response.get('code', 'unknown')})"
+        )
+    return response
+
+
 def _set_zone_pwm(zone, pwm_value):
     """pwm_value: 0–100"""
     pwm = max(0, min(100, int(pwm_value)))
     try:
-        ipmi = _get_ipmi()
-        ipmi.raw_command(netfn=0x30, command=0x70, data=(0x66, 0x01, zone, pwm))
+        _raw_command(netfn=0x30, command=0x70, data=(0x66, 0x01, zone, pwm))
     except Exception as e:
-        logger.warning(f"Set zone {zone} PWM={pwm} failed: {e}")
+        raise RuntimeError(f"Set zone {zone} PWM={pwm} failed: {e}") from e
 
 
 def _set_fan_mode(mode_byte):
     """0x00=Standard 0x01=Full 0x02=Optimal 0x04=HeavyIO"""
     try:
-        ipmi = _get_ipmi()
-        ipmi.raw_command(netfn=0x30, command=0x45, data=(0x01, mode_byte))
+        _raw_command(netfn=0x30, command=0x45, data=(0x01, mode_byte))
     except Exception as e:
-        logger.warning(f"Set fan mode 0x{mode_byte:02x} failed: {e}")
+        raise RuntimeError(f"Set fan mode 0x{mode_byte:02x} failed: {e}") from e
 
 
 def _read_current_pwm():
     pwm = {}
     for z in _state["config"]["zones"]:
         try:
-            ipmi = _get_ipmi()
-            rsp = ipmi.raw_command(netfn=0x30, command=0x70, data=(0x66, 0x00, z))
-            pwm[z] = rsp["data"][0] if rsp["data"] else 0
+            rsp = _raw_command(netfn=0x30, command=0x70, data=(0x66, 0x00, z))
+            value = rsp["data"][0]
+            if not 0 <= value <= 100:
+                raise ValueError("Invalid PWM readback")
+            pwm[z] = value
         except Exception:
             pwm[z] = -1
     return pwm
@@ -199,11 +235,87 @@ def _calc_target_pwm(cpu_temps, gpu_temps):
 
 def _apply_pwm(target):
     """Write target PWM to all configured zones."""
+    errors = []
     for z in _state["config"]["zones"]:
-        _set_zone_pwm(z, target)
+        try:
+            _set_zone_pwm(z, target)
+        except Exception as e:
+            errors.append(str(e))
+    if errors:
+        raise RuntimeError("; ".join(errors))
 
 
 # ── main control loop ──────────────────────────────────────────────
+
+def _control_cycle(active_mode):
+    """Apply one control cycle and publish failures as well as readings."""
+    with _lock:
+        mode = _state["mode"]
+        manual_pwm = dict(_state.get("_manual_pwm", {}))
+
+    errors = []
+    temperatures = []
+    for label, reader in (("BMC", _read_cpu_temps), ("GPU", _read_gpu_temps)):
+        try:
+            values = reader()
+            if label == "BMC" and not values:
+                raise RuntimeError("No CPU temperature sensors available")
+            temperatures.append(values)
+        except Exception as e:
+            errors.append(f"{label} temperature read failed: {e}")
+            temperatures.append({})
+
+    cpu_temps, gpu_temps = temperatures
+    failsafe = mode == "curve" and bool(errors)
+    target = None
+    try:
+        # PWM overrides require Full mode, including when leaving BIOS mode.
+        desired_mode = 0x02 if mode == "bios" else 0x01
+        if active_mode != desired_mode:
+            _set_fan_mode(desired_mode)
+            active_mode = desired_mode
+
+        if mode == "curve":
+            target = 100 if failsafe else _calc_target_pwm(cpu_temps, gpu_temps)
+            _apply_pwm(target)
+        elif mode == "manual":
+            write_errors = []
+            for z, p in manual_pwm.items():
+                try:
+                    _set_zone_pwm(z, p)
+                except Exception as e:
+                    write_errors.append(str(e))
+            if write_errors:
+                raise RuntimeError("; ".join(write_errors))
+        elif mode == "full":
+            target = 100
+            _apply_pwm(target)
+    except Exception as e:
+        errors.append(str(e))
+        # Retry the BMC mode command next cycle after a failed write.
+        active_mode = None
+
+    fans = _read_fans()
+    pwm = _read_current_pwm()
+    if not fans:
+        errors.append("Fan RPM readings unavailable")
+    if any(p < 0 for p in pwm.values()):
+        errors.append("Fan PWM readback failed")
+    error = "; ".join(errors) or None
+    with _lock:
+        _state.update(
+            current_temps={**cpu_temps, **gpu_temps},
+            current_fan_rpm=fans,
+            current_pwm=pwm,
+            target_pwm=target,
+            failsafe=failsafe,
+            last_update=time.time(),
+            error=error,
+        )
+    if error:
+        logger.warning("Fan control: %s", error)
+    return active_mode
+
 
 def _control_loop():
     """Runs in a background thread."""
@@ -212,10 +324,11 @@ def _control_loop():
 
     logger.info("Fan control thread starting...")
 
-    # Defer initial BMC connection so server startup isn't blocked
-    # Wait one interval before first connection attempt
+    # Connection and retries run in this thread, outside the server event loop.
     connected = False
     for attempt in range(5):
+        if _stop_event.is_set():
+            break
         try:
             _set_fan_mode(0x01)  # Full Speed mode
             connected = True
@@ -223,45 +336,20 @@ def _control_loop():
             break
         except Exception as e:
             logger.warning(f"BMC connect attempt {attempt + 1}/5: {e}")
+            with _lock:
+                _state["error"] = str(e)
             _stop_event.wait(timeout=interval)
 
     if not connected:
         with _lock:
-            _state["error"] = "Failed to connect to BMC after 5 attempts"
+            _state["error"] = f"Failed to connect to BMC: {_state['error']}"
             _state["running"] = False
         return
 
+    active_mode = 0x01
     while not _stop_event.is_set():
         try:
-            mode = _state["mode"]
-            cpu_temps = _read_cpu_temps()
-            gpu_temps = _read_gpu_temps()
-            fans = _read_fans()
-            pwm = _read_current_pwm()
-            all_temps = {**cpu_temps, **gpu_temps}
-
-            if mode == "curve":
-                target = _calc_target_pwm(cpu_temps, gpu_temps)
-                _apply_pwm(target)
-            elif mode == "manual":
-                target = None
-                for z, p in _state.get("_manual_pwm", {}).items():
-                    _set_zone_pwm(z, p)
-            elif mode == "full":
-                _apply_pwm(100)
-                target = 100
-            elif mode == "bios":
-                _set_fan_mode(0x02)  # Optimal
-                target = None
-
-            with _lock:
-                _state["current_temps"] = all_temps
-                _state["current_fan_rpm"] = fans
-                _state["current_pwm"] = pwm
-                _state["target_pwm"] = target if mode != "manual" else 0
-                _state["last_update"] = time.time()
-                _state["error"] = None
-
+            active_mode = _control_cycle(active_mode)
         except Exception as e:
             logger.error(f"Fan control error: {e}")
             with _lock:
@@ -272,8 +360,12 @@ def _control_loop():
     # Cleanup: revert to Optimal mode on stop
     try:
         _set_fan_mode(0x02)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error("Failed to restore BMC Optimal mode: %s", e)
+        with _lock:
+            _state["error"] = str(e)
+    with _lock:
+        _state["running"] = False
 
 
 # ── public API ─────────────────────────────────────────────────────
@@ -281,7 +373,7 @@ def _control_loop():
 def configure(config_dict):
     """Apply configuration and restart if needed."""
     with _lock:
-        cfg = dict(DEFAULT_CONFIG)
+        cfg = deepcopy(DEFAULT_CONFIG)
         _deep_update(cfg, config_dict)
         _state["config"] = cfg
 
@@ -306,6 +398,7 @@ def get_state():
             "current_fan_rpm": dict(_state["current_fan_rpm"]),
             "current_temps": dict(_state["current_temps"]),
             "target_pwm": _state["target_pwm"],
+            "failsafe": _state["failsafe"],
             "config": {
                 "interval": _state["config"]["interval"],
                 "curve": dict(_state["config"]["curve"]),
@@ -319,15 +412,14 @@ def set_mode(mode):
     if mode not in ("curve", "manual", "full", "bios"):
         raise ValueError(f"Unknown mode: {mode}")
 
-    if mode == "manual":
-        # Initialize manual PWM with current values
-        with _lock:
+    with _lock:
+        if mode == "manual" and _state["mode"] != "manual":
+            # Missing/failed readbacks must not initialize a zone to 0%.
             current = _state["current_pwm"]
             _state["_manual_pwm"] = {
-                z: current.get(z, 20) for z in _state["config"]["zones"]
+                z: current[z] if 0 <= current.get(z, -1) <= 100 else 100
+                for z in _state["config"]["zones"]
             }
-
-    with _lock:
         _state["mode"] = mode
     logger.info(f"Fan mode -> {mode}")
 
@@ -337,9 +429,13 @@ def set_manual_pwm(zone_values):
     zone_values: dict {zone_number: pwm_value}
     """
     with _lock:
-        _state["_manual_pwm"] = {
+        values = {
             int(k): max(0, min(100, int(v))) for k, v in zone_values.items()
         }
+        unknown = values.keys() - set(_state["config"]["zones"])
+        if unknown:
+            raise ValueError(f"Unknown fan zones: {sorted(unknown)}")
+        _state.setdefault("_manual_pwm", {}).update(values)
 
 
 def start():
@@ -350,9 +446,10 @@ def start():
 
     _stop_event.clear()
     _thread = threading.Thread(target=_control_loop, name="fanctl", daemon=True)
-    _thread.start()
     with _lock:
         _state["running"] = True
+        _state["error"] = None
+    _thread.start()
     logger.info("Fan control started")
 
 

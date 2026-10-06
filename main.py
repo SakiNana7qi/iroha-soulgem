@@ -44,30 +44,35 @@ class IntervalUpdate(BaseModel):
 cmd_runner = CommandRunner(command_configs)
 
 _latest_snapshot = {}
+_collection_lock = asyncio.Lock()
+
+
+def collect_metrics():
+    """Run blocking hardware and OS queries outside the event loop."""
+    return {
+        "cpu": get_cpu(),
+        "memory": get_memory(),
+        "network": get_network(),
+        "disk": get_disk(),
+        "sensors": get_sensors(config),
+        "gpu": get_gpu() if gpu_enabled else None,
+        "services": get_services(service_list),
+        "fanctl": fanctl.get_state() if fanctl_enabled else None,
+    }
 
 
 async def collect_all():
-    cpu = get_cpu()
-    memory = get_memory()
-    network = get_network()
-    disk = get_disk()
-    sensors = get_sensors(config)
-    services = get_services(service_list)
-    commands = await cmd_runner.get_all()
-    gpu = get_gpu() if gpu_enabled else None
-
-    return {
-        "timestamp": datetime.now().isoformat(),
-        "cpu": cpu,
-        "memory": memory,
-        "network": network,
-        "disk": disk,
-        "sensors": sensors,
-        "gpu": gpu,
-        "services": services,
-        "commands": commands,
-        "fanctl": fanctl.get_state() if fanctl_enabled else None,
-    }
+    # Serialize startup/API collection with the background collector to avoid
+    # overlapping hardware queries while the first snapshot is being built.
+    async with _collection_lock:
+        metrics, commands = await asyncio.gather(
+            asyncio.to_thread(collect_metrics), cmd_runner.get_all()
+        )
+        return {
+            **metrics,
+            "commands": commands,
+            "timestamp": datetime.now().isoformat(),
+        }
 
 
 async def background_collector():
@@ -147,7 +152,7 @@ class FanModeUpdate(BaseModel):
 
 
 class FanPwmUpdate(BaseModel):
-    zones: dict  # {zone_number: pwm_value}
+    zones: dict[int, int]  # {zone_number: pwm_value}
 
 
 @app.get("/api/fanctl")
@@ -172,8 +177,11 @@ async def api_fanctl_mode(body: FanModeUpdate):
 async def api_fanctl_pwm(body: FanPwmUpdate):
     if not fanctl_enabled:
         return JSONResponse({"error": "fanctl disabled"}, status_code=404)
-    fanctl.set_manual_pwm(body.zones)
-    return JSONResponse({"ok": True, "zones": body.zones})
+    try:
+        fanctl.set_manual_pwm(body.zones)
+        return JSONResponse({"ok": True, "zones": body.zones})
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
 
 
 if __name__ == "__main__":
